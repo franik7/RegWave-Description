@@ -26,14 +26,14 @@ The system runs **completely automatically**, every morning before business hour
 ## 🏗️ Architecture
 
 ```
-8 Regulatory Agencies → 9 Workflows
+8 Regulatory Agencies → 12 Workflows
         ↓
-n8n Workflows (8 source flows + 1 error handler)
+n8n Workflows (12 source flows + 1 error handler)
    ├── Manual crawling & parsing (7 flows)
    └── Tavily search API (1 flow — FFIEC only)
         ↓
 AI Classification & Summarization
-(Groq llama-4-scout-17b + OpenRouter Gemini 2.0 Flash Lite fallback)
+(Groq llama-4-scout-17b + OpenRouter Google Gemma 4.0 fallback)
         ↓
 Supabase (PostgreSQL Database)
         ↓
@@ -53,7 +53,7 @@ Telegram Error Alerts (real-time)
 
 ## 🏛️ Regulatory Sources
 
-The platform monitors **8 major U.S. regulatory agencies** across **9 automated workflows**. FDIC and the Federal Reserve each have two separate feeds (news and speeches), resulting in 8 workflows from 8 agencies (plus one error handler):
+The platform monitors **8 major U.S. regulatory agencies** across **12 automated workflows** (plus one error handler):
 
 | Source | Type | Collection Method |
 |--------|------|-------------------|
@@ -77,7 +77,7 @@ The platform monitors **8 major U.S. regulatory agencies** across **9 automated 
 
 **What it does in this project:**
 - Triggers all workflows on a daily schedule (5:00–5:35 AM ET, staggered every 5 minutes)
-- Fetches and parses regulatory content from all 8 agencies across 9 workflows
+- Fetches and parses regulatory content from all 8 agencies across 12 workflows
 - Calls AI APIs for classification and summarization
 - Checks Supabase for duplicates before processing
 - Writes processed articles to the database
@@ -153,7 +153,7 @@ The platform monitors **8 major U.S. regulatory agencies** across **9 automated 
 **What runs on it:**
 - n8n (Docker container)
 - Caddy (reverse proxy + SSL termination)
-- All 8 source workflows + error handler
+- All 12 source workflows + error handler
 
 ---
 
@@ -173,9 +173,9 @@ The platform monitors **8 major U.S. regulatory agencies** across **9 automated 
 
 **Primary:** Groq API — `meta-llama/llama-4-scout-17b-16e-instruct`
 - Fast inference, free tier with generous limits
-- Primary model for all 8 workflows
+- Primary model for all 12 workflows
 
-**Fallback:** OpenRouter — `google/gemini-2.0-flash-lite-001`
+**Fallback:** OpenRouter — `google/gemma-4-27b-it:free`
 - Activates automatically if Groq hits rate limits
 - Different company/infrastructure = fully independent rate limits
 - Free tier on OpenRouter
@@ -190,10 +190,10 @@ The platform monitors **8 major U.S. regulatory agencies** across **9 automated 
    - Industry News & Trends
 2. Writes a 2-sentence plain-English summary for compliance officers
 
-**Enhanced AI Classification Prompt v2:**
-Rewrote the n8n classification prompt with explicit decision rules, keyword anchors, and a priority hierarchy to reduce misclassification. Added a KEY TEST heuristic ("Does this article tell a compliance officer they must do something new?") to better distinguish true regulatory updates from program announcements, statistics, and industry news.
+**Enhanced AI Classification Prompt:**
+The n8n classification prompt uses explicit decision rules, keyword anchors, a priority hierarchy, and a hard exclusions list to reduce misclassification. A KEY TEST heuristic ("Would a compliance officer need to change a policy, procedure, or control because of this article?") appears at the top of the Regulatory Updates section to prevent over-classification. A dedicated speech-vs-rule distinction rule prevents named officials' statements about rules from being miscategorised as Regulatory Updates. Worked examples drawn from real articles anchor the model's behaviour for the most common failure patterns.
 
-Manual reclassification — users can now correct AI-assigned categories from the UI; original AI classification is retained in the database for audit purposes and flagged visually in the review queue.
+Manual reclassification — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database for audit purposes and flagged visually in the review queue.
 
 ---
 
@@ -254,9 +254,12 @@ The system uses a **two-layer deduplication strategy**:
 | `url` | text | Source URL (unique) |
 | `source` | text | Regulator name (e.g., "FDIC") |
 | `date_published` | date | Publication date |
-| `category` | text | AI-assigned category |
+| `category` | text | AI-assigned category (current truth — reflects any manual override) |
 | `summary` | text | AI-generated 2-sentence summary |
 | `full_text` | text | Cleaned article content |
+| `ai_category` | text | Original AI-assigned category before any manual reclassification |
+| `manually_reclassified` | boolean | True if a user has overridden the AI category |
+| `added_by` | uuid | FK to auth.users — who added the item |
 | `created_at` | timestamp | When added to DB |
 
 ### `decisions` table (frontend)
@@ -265,10 +268,10 @@ The system uses a **two-layer deduplication strategy**:
 | `id` | uuid | Primary key |
 | `item_id` | uuid | FK to items |
 | `user_id` | uuid | FK to auth.users |
-| `decision` | text | approve / decline / unsure |
+| `action` | text | approve / decline / unsure |
 | `notes` | text | User notes |
-| `created_at` | timestamp | Decision timestamp |
-| `updated_at` | timestamp | Last modified |
+| `decided_at` | timestamp | When decision was made |
+| `created_at` | timestamp | Record creation timestamp |
 
 ---
 
@@ -289,11 +292,6 @@ The system uses a **two-layer deduplication strategy**:
 - Can add their own notes
 - Validates Doer decisions
 
-### 🟣 Approver *(optional extension)*
-- Final authority
-- Confirms or overrides decisions
-- Full audit trail
-
 ### Business Rule
 For each of the regulatory categories, the Doer must make a decision. The system enforces that `Approve` and `Unsure` items flow to the Reviewer queue. All decisions are stored permanently with timestamps and user attribution.
 
@@ -303,16 +301,25 @@ For each of the regulatory categories, the Doer must make a decision. The system
 
 **Hosting:** Netlify (free, auto-deploys from GitHub)  
 **Auth:** Supabase Auth (email/password, multi-user)  
-**Data:** Direct Supabase API connection 
+**Data:** Direct Supabase API connection
 
 ### Features:
 - Multi-user login with role-based access
-- Dashboard style
+- Dashboard with analytics and charts
 - Article list with category badges and AI summaries
 - Per-article decision panel (Approve / Decline / Unsure buttons)
 - Notes field per article
-- Filters by: Category, Status, Date range, Source
-- Reviewer queue (filtered view — approved/unsure only)
+- Manual category reclassification from the UI (original AI category preserved in DB)
+- **Dual-row filter system** — filter by Category (Enforcement, Regulatory, Speeches, News) and by Regulator (FDIC, FinCEN, OCC, Treasury, FINRA, Federal Reserve, SEC, FFIEC) independently; both filters apply together with AND logic
+- Date range filters with presets (Today, Last 7 days, Last 30 days, This month) and custom date picker
+- Reviewer queue with stat cards and the same dual-row filter system as the Doer queue
+- **Analytics tab** including:
+  - KPI cards (total items, decisions by type, pending, unique sources)
+  - Monthly volume chart, category donut, source breakdown table
+  - Decision rate bars, weekly trend, day-of-week distribution, yearly volume
+  - Decisions by category (stacked bar), recent activity feed
+  - Classification intelligence section (AI vs manually reclassified, reclassification rate by category)
+  - **Summary tables** — monthly breakdown of articles by regulator (Jan–Dec columns, regulator rows, total column), with a second table filtered to Regulatory Updates only; both tables update with the dashboard's date period filter
 - Fully responsive (works on mobile)
 
 ---
@@ -332,8 +339,6 @@ For each of the regulatory categories, the Doer must make a decision. The system
 | `restart: always` in Docker | reliability | ✅ | n8n auto-restarts after any crash or server reboot |
 | RAM logging cron job | visibility | ✅ | Logs `free -m` every minute to `~/ram_log.txt` |
 | Do NOT limit Node.js memory | n/a | ✅ | Swap handles overflow; capping Node causes workflow crashes |
-
-```
 
 ### Workflow Optimizations
 
@@ -356,7 +361,7 @@ For each of the regulatory categories, the Doer must make a decision. The system
 | **Supabase** | PostgreSQL database + Auth | Free tier |
 | **Netlify** | Frontend hosting | Free tier |
 | **Groq** | Primary AI (llama-4-scout-17b) | Free tier |
-| **OpenRouter** | Fallback AI (gemini-2.0-flash-lite) | Free tier |
+| **OpenRouter** | Fallback AI (google/gemma-4-27b-it) | Free tier |
 | **Tavily** | FFIEC search (1 workflow only) | Free tier |
 | **Telegram** | Error monitoring alerts | Free |
 
@@ -366,7 +371,7 @@ For each of the regulatory categories, the Doer must make a decision. The system
 
 - ✅ **TOTALLY FREE** — entire stack runs on free tiers permanently
 - ✅ **Fully automated** — runs every morning without human intervention
-- ✅ **8 agencies, 8 workflows** — comprehensive U.S. financial regulator coverage
+- ✅ **8 agencies, 12 workflows** — comprehensive U.S. financial regulator coverage
 - ✅ **HTTPS secured** — custom domain with auto-renewing SSL certificate via Let's Encrypt
 - ✅ **Workplace accessible** — HTTPS domain works on corporate networks that block raw IP addresses
 - ✅ **AI-powered** — automatic classification and plain-English summaries
@@ -376,13 +381,14 @@ For each of the regulatory categories, the Doer must make a decision. The system
 - ✅ **Role-based** — structured Doer → Reviewer workflow
 - ✅ **Real-time monitoring** — Telegram alerts for any workflow failures
 - ✅ **PDF-capable** — OCC speeches published as PDFs are automatically detected, fetched, and extracted using n8n's built-in tooling
+- ✅ **Regulator filtering** — filter any queue by specific regulator (FDIC, FinCEN, OCC, Treasury, FINRA, Federal Reserve, SEC, FFIEC) alongside category filters, with AND logic
+- ✅ **Monthly summary tables** — analytics tab shows article volume by regulator and month at a glance, with a dedicated Regulatory Updates view
 
 ---
 
 ## 🚀 Future Improvements
 
 - Email/SMS digest alerts for new high-priority items
-- Analytics dashboard (article volume by source, category trends)
 - Multi-tenant support for multiple compliance teams
 - Integration with existing compliance management systems
 - Mobile app for on-the-go review
