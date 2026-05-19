@@ -28,7 +28,7 @@ The system runs completely automatically, every morning before business hours, a
 8 Regulatory Agencies → 12 Workflows
         ↓
 n8n Workflows (12 source flows + 1 error handler)
-   ├── Manual crawling & parsing (7 flows)
+   ├── Manual crawling & parsing (11 flows)
    └── Tavily search API (1 flow — FFIEC only)
         ↓
 AI Classification & Summarization
