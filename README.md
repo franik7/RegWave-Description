@@ -28,7 +28,7 @@ The system runs completely automatically, every morning before business hours, a
 10 Regulatory Agencies → 16 Workflows
         ↓
 n8n Workflows
-   ├── 13 source workflows (one per regulator, DOJ has 2)
+   ├── 14 source workflows
    ├── 1 email digest delivery workflow
    └── 1 global error handler
         ↓
@@ -65,7 +65,7 @@ Telegram Error Alerts (real-time)
 
 ## 🏛️ Regulatory Sources
 
-The platform monitors 10 major U.S. regulatory agencies across 16 automated workflows (13 source workflows + 1 email digest + 1 error handler):
+The platform monitors 10 major U.S. regulatory agencies across 16 automated workflows (14 source workflows + 1 email digest + 1 error handler):
 
 | Source | Type | Collection Method |
 |--------|------|-------------------|
@@ -77,8 +77,8 @@ The platform monitors 10 major U.S. regulatory agencies across 16 automated work
 | Federal Reserve | News & Speeches | RSS + parse |
 | SEC | Press Releases | RSS + parse |
 | FFIEC | Press Releases | Tavily search |
-| DOJ | Press Releases | RSS + parse (2 workflows — press releases + video filtered) |
-| CFTC | News & Enforcement | Manual crawl |
+| DOJ | Press Releases | RSS + parse |
+| CFTC | Press Releases & Speeches | Manual crawl |
 
 > **Note:** Tavily is used exclusively for FFIEC. All other sources use direct crawling, HTML parsing, and content cleaning pipelines. OCC speeches are published as PDFs — these are handled via a dedicated PDF extraction branch. DOJ publishes the same announcement across both press release and video URLs — the video workflow filters these out at ingestion to prevent duplicates.
 
@@ -91,8 +91,8 @@ The platform monitors 10 major U.S. regulatory agencies across 16 automated work
 **What it is:** An open-source workflow automation platform (like Zapier but self-hosted and free).
 
 **What it does in this project:**
-- Triggers all workflows on a daily schedule (5:00–5:35 AM ET, staggered every 5 minutes)
-- Fetches and parses regulatory content from all 10 agencies across 13 source workflows
+- Triggers all workflows on a daily schedule (5:00–5:45 AM ET, staggered every 5 minutes)
+- Fetches and parses regulatory content from all 10 agencies across 14 source workflows
 - Calls AI APIs for classification and summarization
 - Calls HuggingFace to generate a 384-dimension embedding vector for each article
 - Checks Supabase for duplicates before processing
@@ -183,7 +183,7 @@ Browser: "insider trading" → /.netlify/functions/embed
 **What it stores:**
 - All processed regulatory articles (title, URL, source, date, category, summary, full text)
 - AI-generated categories and summaries
-- 384-dimension embedding vectors (one per article, in a `vector(384)` column)
+- 384-dimension embedding vectors (one per article)
 - User triage decisions (relevant / irrelevant / review later) with notes and timestamps
 - User subscriptions for the email digest (frequency, regulators, themes)
 
@@ -448,23 +448,9 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 ## 🔧 Optimizations
 
-### Server RAM Optimizations (Oracle Free Tier)
-
-| Optimization | RAM Saved | Safe? | Notes |
-|---|---|---|---|
-| Remove Snap | ~150MB | ✅ | Largest single win |
-| Remove oracle-cloud-agent | ~50MB | ✅ | Removed automatically with snap; Oracle metrics stop but instance runs fine |
-| Disable multipathd | ~27MB | ✅ | Multi-path disk manager, not needed on single-disk VPS |
-| Disable apport + whoopsie | ~15MB | ✅ | Ubuntu crash reporters, useless on a server |
-| Limit journald to 50MB | variable | ✅ | Prevents log files from consuming unbounded RAM |
-| 4GB swap file | prevents crashes | ✅ | Emergency RAM overflow buffer; n8n spills into swap instead of crashing |
-| restart: always in Docker | reliability | ✅ | n8n auto-restarts after any crash or server reboot |
-| RAM logging cron job | visibility | ✅ | Logs `free -m` every minute to ~/ram_log.txt |
-| Do NOT limit Node.js memory | n/a | ✅ | Swap handles overflow; capping Node causes workflow crashes |
-
 ### Workflow Optimizations
 
-- **Staggered triggers** — workflows run every 5 minutes from 5:00–5:35 AM to avoid simultaneous API hammering
+- **Staggered triggers** — workflows run every 5 minutes from 5:00–5:45 AM to avoid simultaneous API hammering
 - **Deduplication before AI** — AI is only called for genuinely new articles (saves API costs and rate limits)
 - **Embedding after classification** — HuggingFace is only called after the AI successfully classifies an article, so no embeddings are generated for skipped or failed items
 - **Dynamic year in URLs** — all listing URLs use `new Date().getFullYear()` expression so no code changes are needed each January
@@ -510,7 +496,6 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - ✅ **Personalized email digest** — daily or weekly delivery matched to each subscriber's regulators and compliance themes via semantic search
 - ✅ **Corporate firewall friendly** — semantic search routed via Netlify function; no direct browser-to-HuggingFace calls
 - ✅ **HTTPS secured** — custom domain with auto-renewing SSL certificate via Let's Encrypt
-- ✅ **Workplace accessible** — HTTPS domain works on corporate networks that block raw IP addresses
 - ✅ **AI-powered** — automatic classification and plain-English summaries
 - ✅ **Duplicate-free** — URL-level deduplication + DOJ video URL filtering at ingestion
 - ✅ **Fault-tolerant** — dual AI providers + Telegram error alerts + Docker auto-restart
