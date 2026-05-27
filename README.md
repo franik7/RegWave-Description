@@ -16,7 +16,7 @@ This platform fully automates the collection, AI-processing, and structured revi
 - Fraud fines & enforcement actions
 - Regulatory developments across financial services
 
-The system runs completely automatically, every morning before business hours, and routes processed data through a structured compliance review workflow with defined user roles.
+The system runs completely automatically, every morning before business hours, and routes processed data through a structured compliance review workflow.
 
 **💰 Cost: $0** under current free-tier limits. The system is designed to operate entirely within free tiers, though higher volume or API usage may require upgrades.
 
@@ -25,11 +25,12 @@ The system runs completely automatically, every morning before business hours, a
 ## 🏗️ Architecture
 
 ```
-8 Regulatory Agencies → 12 Workflows
+10 Regulatory Agencies → 16 Workflows
         ↓
-n8n Workflows (12 source flows + 1 error handler)
-   ├── Manual crawling & parsing (11 flows)
-   └── Tavily search API (1 flow — FFIEC only)
+n8n Workflows
+   ├── 13 source workflows (one per regulator, DOJ has 2)
+   ├── 1 email digest delivery workflow
+   └── 1 global error handler
         ↓
 AI Classification & Summarization
 (Groq llama-4-scout-17b + OpenRouter Google Gemma 4.0 fallback)
@@ -39,7 +40,8 @@ HuggingFace Inference API
         ↓
 Supabase (PostgreSQL + pgvector)
    ├── Article content, metadata & decisions
-   └── Embedding vectors for semantic search
+   ├── Embedding vectors for semantic search
+   └── User subscriptions for email digest
         ↓
 Caddy Reverse Proxy (HTTPS + auto SSL)
         ↓
@@ -51,7 +53,10 @@ Web Frontend (Netlify)
    └── Direct Supabase connection (data + auth)
         ↓
 User Review Workflow
-(Doer → Reviewer → Stored decisions)
+(Queue → Relevant / Irrelevant / Review Later → Stored decisions)
+        ↓
+Email Digest Delivery
+(Personalized daily or weekly digest per subscriber via Gmail)
         ↓
 Telegram Error Alerts (real-time)
 ```
@@ -60,7 +65,7 @@ Telegram Error Alerts (real-time)
 
 ## 🏛️ Regulatory Sources
 
-The platform monitors 8 major U.S. regulatory agencies across 12 automated workflows (plus one error handler):
+The platform monitors 10 major U.S. regulatory agencies across 16 automated workflows (13 source workflows + 1 email digest + 1 error handler):
 
 | Source | Type | Collection Method |
 |--------|------|-------------------|
@@ -72,8 +77,10 @@ The platform monitors 8 major U.S. regulatory agencies across 12 automated workf
 | Federal Reserve | News & Speeches | RSS + parse |
 | SEC | Press Releases | RSS + parse |
 | FFIEC | Press Releases | Tavily search |
+| DOJ | Press Releases | RSS + parse (2 workflows — press releases + video filtered) |
+| CFTC | News & Enforcement | Manual crawl |
 
-> **Note:** Tavily is used exclusively for FFIEC. All other sources use direct crawling, HTML parsing, and content cleaning pipelines. OCC speeches are published as PDFs — these are handled via a dedicated PDF extraction branch.
+> **Note:** Tavily is used exclusively for FFIEC. All other sources use direct crawling, HTML parsing, and content cleaning pipelines. OCC speeches are published as PDFs — these are handled via a dedicated PDF extraction branch. DOJ publishes the same announcement across both press release and video URLs — the video workflow filters these out at ingestion to prevent duplicates.
 
 ---
 
@@ -85,11 +92,12 @@ The platform monitors 8 major U.S. regulatory agencies across 12 automated workf
 
 **What it does in this project:**
 - Triggers all workflows on a daily schedule (5:00–5:35 AM ET, staggered every 5 minutes)
-- Fetches and parses regulatory content from all 8 agencies across 12 workflows
+- Fetches and parses regulatory content from all 10 agencies across 13 source workflows
 - Calls AI APIs for classification and summarization
 - Calls HuggingFace to generate a 384-dimension embedding vector for each article
 - Checks Supabase for duplicates before processing
 - Writes processed articles + embeddings to the database
+- Delivers personalized email digests to subscribers at 7 AM daily
 - Sends Telegram alerts when any workflow fails
 
 **Deployment:** Self-hosted in Docker on Oracle Cloud free tier VPS, accessed securely via Caddy reverse proxy over HTTPS.
@@ -102,7 +110,7 @@ The platform monitors 8 major U.S. regulatory agencies across 12 automated workf
 
 **How it fits into the system:**
 
-There are two completely separate HuggingFace calls serving different purposes:
+There are three completely separate HuggingFace calls serving different purposes:
 
 **Call 1 — Write path (n8n, at ingest time):**
 For every new article scraped, n8n sends the article title + AI-generated summary to HuggingFace. The model returns 384 numbers — a "meaning fingerprint" of the article. These numbers are stored permanently in Supabase alongside the article content in a `vector(384)` column.
@@ -124,9 +132,20 @@ User types "money laundering"
     → Returns top matches sorted by semantic relevance
 ```
 
-**Why this matters:** Searching "money laundering" returns articles about BSA compliance, illicit finance, and sanctions evasion — even if those exact words don't appear in the title. The search understands *meaning*, not just keywords.
+**Call 3 — Email digest path (n8n, at delivery time):**
+When the email digest workflow runs, it converts each subscriber's saved themes (e.g. "Fraud BSA AML") into a 384-number vector via HuggingFace. Supabase then finds the articles most semantically similar to those themes from the relevant time window, and those are the articles delivered in the digest.
 
-**Think of it as a map:** Each article gets plotted at a location on a 384-dimensional map based on what it's *about*. Articles on similar topics land near each other. A search query gets plotted on the same map, and the closest articles are returned — regardless of exact wording.
+```
+Subscriber themes: ["Fraud", "BSA", "AML"]
+    → n8n → HuggingFace: "Fraud BSA AML" → [384 numbers]
+    → Supabase match_items_for_digest() RPC: compare vs stored embeddings
+    → Returns top matches from past 1 or 7 days
+    → Formatted and delivered via Gmail
+```
+
+**Why this matters:** Searching or subscribing to "money laundering" returns articles about BSA compliance, illicit finance, and sanctions evasion — even if those exact words don't appear in the title. The system understands *meaning*, not just keywords.
+
+**Think of it as a map:** Each article gets plotted at a location on a 384-dimensional map based on what it's *about*. Articles on similar topics land near each other. A search query or digest theme gets plotted on the same map, and the closest articles are returned — regardless of exact wording.
 
 ---
 
@@ -138,7 +157,7 @@ User types "money laundering"
 1. Corporate firewalls block `huggingface.co` at the network level, breaking search on work computers
 2. A 30MB model download on every session is wasteful and slow on mobile
 
-**What it does:** Acts as a lightweight proxy — the browser sends a search query string to `/.netlify/functions/embed`, the function calls HuggingFace server-side, and returns the resulting vector to the browser. The browser then passes that vector directly to Supabase for the similarity search.
+**What it does:** Acts as a lightweight proxy — the browser sends a search query string to `/.netlify/functions/embed`, the function calls HuggingFace server-side, and returns the resulting vector to the browser. The browser then passes that vector directly to Supabase for the similarity search. The same function is also called by the n8n email digest workflow to embed subscriber themes.
 
 ```
 Browser: "insider trading" → /.netlify/functions/embed
@@ -165,8 +184,8 @@ Browser: "insider trading" → /.netlify/functions/embed
 - All processed regulatory articles (title, URL, source, date, category, summary, full text)
 - AI-generated categories and summaries
 - 384-dimension embedding vectors (one per article, in a `vector(384)` column)
-- User decisions (approve/decline/unsure) with notes and timestamps
-- Decision history and reviewer notes
+- User triage decisions (relevant / irrelevant / review later) with notes and timestamps
+- User subscriptions for the email digest (frequency, regulators, themes)
 
 **How vector search works:**
 A PostgreSQL function called `search_items()` is stored inside the database. When called with a query vector, it uses pgvector's `<=>` operator to compute cosine similarity between the query and every stored article embedding, returning the closest matches:
@@ -177,14 +196,56 @@ ORDER BY embedding <=> query_embedding
 LIMIT 200;
 ```
 
+A second RPC function `match_items_for_digest()` handles the email digest path — filtering by regulator, time window, and similarity threshold before returning matched articles.
+
 This all happens inside Postgres — no data travels to an external search service.
 
 **Why Supabase:**
 - Free tier is generous (500MB database, unlimited API calls)
 - Built-in authentication for multi-user login
-- Row-Level Security (RLS) for role-based data access
+- Row-Level Security (RLS) for access control
 - pgvector extension available natively
 - Real-time API accessible directly from the frontend
+
+---
+
+### 🔹 Email Digest — Personalized Regulatory Intelligence Delivery
+
+**What it is:** An automated daily or weekly email sent to each subscriber containing the regulatory articles most relevant to their chosen themes and regulators, matched using AI semantic search.
+
+**How it works:**
+
+The email digest workflow runs at 7 AM daily and processes each active subscriber independently:
+
+```
+7 AM trigger
+    → Fetch all active subscriptions from Supabase
+    → Filter: who is due today? (daily = always, weekly = only on their chosen day)
+    → For each qualifying subscriber:
+        → Embed their themes via HuggingFace ("Fraud BSA AML" → [384 numbers])
+        → Call match_items_for_digest() RPC:
+            - days_back: 1 (daily) or 7 (weekly)
+            - regulator_filter: subscriber's chosen regulators
+            - match_threshold: 0.3 cosine similarity
+            - match_count: up to 100 results
+        → If no themes set: return all recent articles by date (no semantic filter)
+        → Format HTML email with matched articles
+        → Send via Gmail
+        → Loop to next subscriber
+```
+
+**What subscribers configure (Alerts page):**
+- **Frequency** — daily or weekly
+- **Send day** — for weekly, which day of the week
+- **Regulators** — which of the 10 agencies to monitor (leave empty = all)
+- **Themes** — compliance topics to prioritize (e.g. BSA, AML, Fraud, Sanctions, KYC); leave empty = all recent content
+
+**Why semantic matching matters for the digest:**
+Two subscribers can have completely different digests from the same article pool. A subscriber focused on "Sanctions OFAC" will receive different articles than one focused on "Fraud enforcement" — even if both watch the same regulators — because the semantic matching finds articles by meaning, not by keyword overlap.
+
+**Deduplication:** DOJ video URLs are filtered at ingestion so the same announcement never appears twice in the digest.
+
+**Email design:** The digest email matches the RegWave brand — navy header with red accent stripe, category color badges (enforcement, regulatory, speeches, news), similarity score shown per article, and a direct link to update preferences.
 
 ---
 
@@ -238,7 +299,7 @@ This all happens inside Postgres — no data travels to an external search servi
 **What runs on it:**
 - n8n (Docker container)
 - Caddy (reverse proxy + SSL termination)
-- All 12 source workflows + error handler
+- All 16 workflows
 
 ---
 
@@ -260,7 +321,7 @@ This all happens inside Postgres — no data travels to an external search servi
 
 **Primary:** Groq API — `meta-llama/llama-4-scout-17b-16e-instruct`
 - Fast inference, free tier with generous limits
-- Primary model for all 12 workflows
+- Primary model for all source workflows
 
 **Fallback:** OpenRouter — `google/gemma-4-27b-it:free`
 - Activates automatically if Groq hits rate limits
@@ -277,7 +338,7 @@ This all happens inside Postgres — no data travels to an external search servi
    - Industry News & Trends
 2. Writes a 2-sentence plain-English summary for compliance officers
 
-**Enhanced AI Classification Prompt:** The n8n classification prompt uses explicit decision rules, keyword anchors, a priority hierarchy, and a hard exclusions list to reduce misclassification. A KEY TEST heuristic ("Would a compliance officer need to change a policy, procedure, or control because of this article?") appears at the top of the Regulatory Updates section to prevent over-classification. A dedicated speech-vs-rule distinction rule prevents named officials' statements about rules from being miscategorised as Regulatory Updates. Worked examples drawn from real articles anchor the model's behaviour for the most common failure patterns.
+**Enhanced AI Classification Prompt:** The classification prompt uses explicit decision rules, keyword anchors, a priority hierarchy, and a hard exclusions list to reduce misclassification. A KEY TEST heuristic ("Would a compliance officer need to change a policy, procedure, or control because of this article?") appears at the top of the Regulatory Updates section to prevent over-classification. A dedicated speech-vs-rule distinction rule prevents named officials' statements about rules from being miscategorized as Regulatory Updates. Worked examples drawn from real articles anchor the model's behavior for the most common failure patterns.
 
 **Manual reclassification** — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database for audit purposes and flagged visually in the review queue.
 
@@ -287,11 +348,12 @@ This all happens inside Postgres — no data travels to an external search servi
 
 The system is designed to fail safely and visibly:
 
-- Duplicate articles → skipped automatically
+- Duplicate articles → skipped automatically (URL-level and video URL filtering)
 - AI failures → fallback provider is triggered
 - Source errors → workflow fails and sends Telegram alert
 - Parsing failures → article is skipped (no partial data stored)
 - HuggingFace embedding failure → article is skipped; no partial records stored
+- Empty digest → no email sent (zero-match guard in Format Email node)
 
 A global error workflow ensures no silent failures.
 
@@ -313,7 +375,7 @@ This ensures failures are immediately visible and actionable.
 - URL-based deduplication assumes one URL per unique article
 - HTML parsing depends on regulator website structure (can break if layout changes)
 - FFIEC relies on Tavily search rather than direct scraping
-- Classification can be deterministic (manual override option is available)
+- Classification can be non-deterministic (manual override option is available)
 - OCC PDF extraction depends on n8n's built-in Extract From File node; scanned/image PDFs will not extract correctly
 - HuggingFace free inference tier may queue requests under heavy load (~200–400ms additional latency)
 
@@ -326,7 +388,7 @@ These are acceptable trade-offs for a lightweight, free-tier system.
 The system uses a two-layer deduplication strategy:
 
 **Pre-processing deduplication (workflow level)**
-Each workflow checks whether an article URL already exists in Supabase before sending it to AI. This prevents unnecessary API calls and reduces token usage.
+Each workflow checks whether an article URL already exists in Supabase before sending it to AI. This prevents unnecessary API calls and reduces token usage. DOJ workflows additionally filter out `/video/` URLs at the parsing stage, preventing the same announcement from being stored twice under different URLs.
 
 **Database-level protection (Supabase)**
 The `url` field is enforced as unique, ensuring no duplicate records are ever stored, even if multiple workflows run concurrently.
@@ -335,8 +397,8 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 ## 💻 Frontend (Web Interface)
 
-**Hosting:** Netlify (free, auto-deploys from GitHub)  
-**Auth:** Supabase Auth (email/password, multi-user)  
+**Hosting:** Netlify (free, auto-deploys from GitHub)
+**Auth:** Supabase Auth (email/password, invite-only registration)
 **Data:** Direct Supabase API connection
 
 ### Features
@@ -349,15 +411,23 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 **Filtering**
 - Collapsible sidebar filter panel on desktop (click "‹ hide" to collapse, "› show" to expand — state persists per session)
 - Mobile filter drawer — tap ⚙ Filters to open a full-screen drawer with chip-style filter controls
-- Filter by Category (Enforcement, Regulatory, Speeches, News) and by Regulator (FDIC, FinCEN, OCC, Treasury, FINRA, Federal Reserve, SEC, FFIEC) independently; both filters apply together with AND logic
+- Filter by Category (Enforcement, Regulatory, Speeches, News) and by Regulator independently; both filters apply together with AND logic
 - Date range filters with presets (Today, Last 7 days, Last 30 days, This month) and custom date picker
 - Filters and search intersect — semantic results are scoped to whichever items are currently visible through active filters
 
 **Review Workflow**
-- Multi-user login with role-based access (Doer / Reviewer)
-- Per-article decision panel (Approve / Decline / Unsure buttons) with notes field
+- Invite-only user registration — new users receive a magic link via email; no public sign-up
+- Per-article triage panel with three decisions: **Relevant**, **Irrelevant**, **Review Later**
+- Notes field per article, saveable independently of triage decision
 - Manual category reclassification from the UI (original AI category preserved in DB, flagged visually)
-- Reviewer queue with stat cards and the same filter system as the Doer queue
+- Full audit trail — every triage decision is stored with user attribution and timestamp
+
+**Email Digest (Alerts)**
+- Each user configures their own digest preferences from the Alerts page
+- Choose frequency (daily or weekly), regulators to monitor, and key compliance themes
+- Themes drive semantic matching — articles are ranked by meaning, not keyword overlap
+- Leave themes empty to receive all recent content; leave regulators empty to monitor all 10 agencies
+- Digest emails are sent automatically at 7 AM, formatted to match the RegWave brand
 
 **Analytics Dashboard**
 - KPI cards (total items, decisions by type, pending, unique sources)
@@ -400,6 +470,8 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - **Dynamic year in URLs** — all listing URLs use `new Date().getFullYear()` expression so no code changes are needed each January
 - **Dual AI provider** — Groq primary + OpenRouter fallback prevents rate limit failures; two independent providers with separate limits
 - **OCC PDF routing** — URL-based If node splits PDF and HTML articles before fetching, avoiding binary/text confusion downstream
+- **DOJ video filtering** — `/video/` URLs filtered at parse time, before duplicate check or AI call, keeping the database clean at zero extra cost
+- **Empty digest guard** — if zero articles match a subscriber's criteria, no email is sent
 
 ### Frontend Optimizations
 
@@ -424,6 +496,7 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 | Groq | Primary AI (llama-4-scout-17b) | Free tier |
 | OpenRouter | Fallback AI (google/gemma-4-27b-it) | Free tier |
 | Tavily | FFIEC search (1 workflow only) | Free tier |
+| Gmail | Email digest delivery | Free |
 | Telegram | Error monitoring alerts | Free |
 
 ---
@@ -432,16 +505,17 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 - ✅ **TOTALLY FREE** — entire stack runs on free tiers permanently
 - ✅ **Fully automated** — runs every morning without human intervention
-- ✅ **8 agencies, 12 workflows** — comprehensive U.S. financial regulator coverage
+- ✅ **10 agencies, 16 workflows** — comprehensive U.S. financial regulator coverage
 - ✅ **Semantic search** — finds conceptually related articles, not just keyword matches; powered by HuggingFace embeddings stored in pgvector
+- ✅ **Personalized email digest** — daily or weekly delivery matched to each subscriber's regulators and compliance themes via semantic search
 - ✅ **Corporate firewall friendly** — semantic search routed via Netlify function; no direct browser-to-HuggingFace calls
 - ✅ **HTTPS secured** — custom domain with auto-renewing SSL certificate via Let's Encrypt
 - ✅ **Workplace accessible** — HTTPS domain works on corporate networks that block raw IP addresses
 - ✅ **AI-powered** — automatic classification and plain-English summaries
-- ✅ **Duplicate-free** — built-in deduplication prevents redundant data
+- ✅ **Duplicate-free** — URL-level deduplication + DOJ video URL filtering at ingestion
 - ✅ **Fault-tolerant** — dual AI providers + Telegram error alerts + Docker auto-restart
-- ✅ **Audit-ready** — all decisions stored with timestamps and user attribution
-- ✅ **Role-based** — structured Doer → Reviewer workflow
+- ✅ **Audit-ready** — all triage decisions stored with user attribution and timestamps
+- ✅ **Invite-only access** — no public registration; users join via magic link only
 - ✅ **Real-time monitoring** — Telegram alerts for any workflow failures
 - ✅ **PDF-capable** — OCC speeches published as PDFs are automatically detected, fetched, and extracted
 - ✅ **Dark mode** — system-wide dark theme with localStorage persistence and flash-free loading
@@ -450,22 +524,14 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 ---
 
-## 🚀 Future Improvements
-
-- Email/SMS digest alerts for new high-priority items
-- Multi-tenant support for multiple compliance teams
-- Integration with existing compliance management systems
-- Expanded international regulator coverage
-- Upgrade Oracle VM to A1.Flex (4 OCPU / 24GB RAM) when free tier capacity becomes available
-
----
-
 ## 📋 Business Summary
 
-This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured compliance review workflow. Analysts (Doers) review AI-summarized articles and make initial decisions; Reviewers validate those decisions. Every action is permanently stored for audit purposes.
+This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured compliance review workflow. Every user sees the same unified queue and triages articles as Relevant, Irrelevant, or Review Later. Every action is permanently stored with user attribution for audit purposes.
 
-Semantic search — powered by HuggingFace embeddings and pgvector — lets compliance teams find relevant articles by meaning rather than exact keywords. The system is secured with HTTPS via a custom domain, accessible from any network including corporate environments, and eliminates hours of daily manual monitoring across 8 agencies at zero ongoing cost.
+Semantic search — powered by HuggingFace embeddings and pgvector — lets compliance teams find relevant articles by meaning rather than exact keywords. The same semantic engine powers the personalized email digest: each subscriber receives a curated set of articles matched to their chosen regulators and compliance themes, delivered daily or weekly without any manual curation.
+
+The system is secured with HTTPS via a custom domain, accessible from any network including corporate environments, and eliminates hours of daily manual monitoring across 10 agencies at zero ongoing cost.
 
 ---
 
-*Built with n8n · Supabase · pgvector · Oracle Cloud · Caddy · Let's Encrypt · Netlify · HuggingFace · Groq · OpenRouter · Tavily · Telegram*
+*Built with n8n · Supabase · pgvector · Oracle Cloud · Caddy · Let's Encrypt · Netlify · HuggingFace · Groq · OpenRouter · Tavily · Gmail · Telegram*
