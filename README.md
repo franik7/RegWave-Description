@@ -25,11 +25,12 @@ The system runs completely automatically, every morning before business hours, a
 ## 🏗️ Architecture
 
 ```
-10 Regulatory Agencies → 16 Workflows
+10 Regulatory Agencies → 17 Workflows
         ↓
 n8n Workflows
    ├── 14 source workflows
    ├── 1 email digest delivery workflow
+   ├── 1 on-demand share workflow (webhook-triggered)
    └── 1 global error handler
         ↓
 AI Classification & Summarization
@@ -50,13 +51,18 @@ Custom Domain (HTTPS secured, no port number)
 Web Frontend (Netlify)
    ├── Netlify Serverless Function (embed.js)
    │   └── Converts search queries → vectors via HuggingFace
+   ├── Netlify Serverless Function (share.js)
+   │   └── Proxies "share filtered" requests → n8n webhook (secret held server-side)
    └── Direct Supabase connection (data + auth)
         ↓
 User Review Workflow
-(Queue → Relevant / Irrelevant / Review Later → Stored decisions)
+(Queue → Smart/Exact search → filter → Relevant / Irrelevant / Review Later → Stored decisions)
         ↓
-Email Digest Delivery
-(Personalized daily or weekly digest per subscriber via Gmail)
+Output & Distribution
+   ├── Email Digest Delivery (scheduled daily/weekly per subscriber via Gmail)
+   ├── Share Filtered (on-demand email of the current filtered set via Gmail)
+   ├── Per-article Share (mailto to user's own mail client)
+   └── CSV Export (current filtered view, with triage status & notes)
         ↓
 Telegram Error Alerts (real-time)
 ```
@@ -65,7 +71,7 @@ Telegram Error Alerts (real-time)
 
 ## 🏛️ Regulatory Sources
 
-The platform monitors 10 major U.S. regulatory agencies across 16 automated workflows (14 source workflows + 1 email digest + 1 error handler):
+The platform monitors 10 major U.S. regulatory agencies across 17 automated workflows (14 source workflows + 1 email digest + 1 error handler, plus 1 webhook-triggered share workflow):
 
 | Source | Type | Collection Method |
 |--------|------|-------------------|
@@ -91,13 +97,14 @@ The platform monitors 10 major U.S. regulatory agencies across 16 automated work
 **What it is:** An open-source workflow automation platform (like Zapier but self-hosted and free).
 
 **What it does in this project:**
-- Triggers all workflows on a daily schedule (5:00–5:45 AM ET, staggered every 5 minutes)
+- Triggers all scheduled workflows daily (5:00–5:45 AM ET, staggered every 5 minutes)
 - Fetches and parses regulatory content from all 10 agencies across 14 source workflows
 - Calls AI APIs for classification and summarization
 - Calls HuggingFace to generate a 384-dimension embedding vector for each article
 - Checks Supabase for duplicates before processing
 - Writes processed articles + embeddings to the database
 - Delivers personalized email digests to subscribers at 7 AM daily
+- Handles on-demand "share filtered" requests via a dedicated webhook workflow (triggered by the frontend)
 - Sends Telegram alerts when any workflow fails
 
 **Deployment:** Self-hosted in Docker on Oracle Cloud free tier VPS, accessed securely via Caddy reverse proxy over HTTPS.
@@ -149,9 +156,31 @@ Subscriber themes: ["Fraud", "BSA", "AML"]
 
 ---
 
-### 🔹 Netlify Serverless Function — Embedding Proxy
+### 🔹 Search — Smart (Hybrid) & Exact Modes
 
-**What it is:** A Node.js serverless function (`netlify/functions/embed.js`) deployed automatically alongside the frontend on Netlify.
+The queue search bar offers two modes via a toggle, with **Smart** as the default:
+
+**Smart (hybrid) — default.** Combines semantic recall with keyword precision. The query is embedded via the Netlify function and matched against stored vectors (pgvector), *and* simultaneously scored against article text by keyword. The two ranked lists are then fused using reciprocal-rank fusion (RRF), so an article that's both semantically related *and* contains the literal terms rises to the top. This fixes the common failure of pure-semantic search burying an obvious exact-term match.
+
+```
+User types "insider trading prediction markets"
+    → Semantic ranking (meaning)  ─┐
+    → Keyword ranking (literal terms) ─┤ → RRF fusion → final ranked results
+```
+
+**Exact (keyword).** Pure literal matching across title, summary, and full text — useful for exact names, codes, short queries, and exhaustive literal sweeps where you want only documents containing the exact terms.
+
+**Automatic bypass.** Queries of 4 characters or fewer, and exact regulator-name searches (e.g. "SEC", "FDIC"), skip semantic processing entirely and use fast keyword matching — the mode toggle dims to indicate it has no effect for those queries.
+
+**Filter intersection.** Search results are always scoped to whatever items are currently visible through active filters (status, category, regulator, date) — search and filters apply together.
+
+---
+
+### 🔹 Netlify Serverless Functions
+
+Two Node.js serverless functions are deployed automatically alongside the frontend on Netlify.
+
+#### `embed.js` — Embedding Proxy
 
 **Why it exists:** The original implementation ran the embedding model directly in the browser using `@xenova/transformers` — downloading ~30MB of model weights on every page load and running inference client-side. This caused two problems:
 1. Corporate firewalls block `huggingface.co` at the network level, breaking search on work computers
@@ -173,6 +202,22 @@ Browser: "insider trading" → /.netlify/functions/embed
 - First search responds in ~200ms instead of waiting for model warmup
 - Works on any device including older mobile browsers
 - Free — Netlify's free tier includes 125,000 function invocations per month
+
+#### `share.js` — Share Proxy (frontend → n8n)
+
+**Why it exists:** The "Share filtered" feature needs to send email on demand, but the n8n webhook requires a shared secret. Because the frontend is a public static site, that secret must never appear in page source. `share.js` holds the secret server-side as a Netlify environment variable and injects it when forwarding the request.
+
+**What it does:** The browser POSTs the filtered articles + recipient to `/.netlify/functions/share` (no secret). The function validates the payload (valid email, at least one article, max 50), adds the `x-regwave-secret` header, and forwards to the n8n webhook, which checks the secret and sends the email.
+
+```
+Browser: { recipient, articles[] } → /.netlify/functions/share
+    → adds secret header (from Netlify env var)
+    → n8n webhook → secret check → format HTML → Gmail send
+```
+
+**Environment variables required (set in Netlify):**
+- `SHARE_WEBHOOK_URL` — the n8n production webhook URL
+- `SHARE_WEBHOOK_SECRET` — shared secret, must match the value checked in the n8n workflow
 
 ---
 
@@ -200,6 +245,10 @@ A second RPC function `match_items_for_digest()` handles the email digest path �
 
 This all happens inside Postgres — no data travels to an external search service.
 
+**Access control (Row-Level Security):**
+- `items` is read-only for anonymous users (public regulatory news); inserts/updates require an authenticated user, and ingestion runs via the service-role key
+- `decisions`, `subscriptions`, and `profiles` are protected per-user — a signed-in user can only read and write their own rows
+
 **Why Supabase:**
 - Free tier is generous (500MB database, unlimited API calls)
 - Built-in authentication for multi-user login
@@ -209,7 +258,11 @@ This all happens inside Postgres — no data travels to an external search servi
 
 ---
 
-### 🔹 Email Digest — Personalized Regulatory Intelligence Delivery
+### 🔹 Sharing & Export
+
+RegWave provides three independent ways to get articles out of the platform, each suited to a different need.
+
+#### Email Digest (scheduled) — Personalized Regulatory Intelligence Delivery
 
 **What it is:** An automated daily or weekly email sent to each subscriber containing the regulatory articles most relevant to their chosen themes and regulators, matched using AI semantic search.
 
@@ -246,6 +299,28 @@ Two subscribers can have completely different digests from the same article pool
 **Deduplication:** DOJ video URLs are filtered at ingestion so the same announcement never appears twice in the digest.
 
 **Email design:** The digest email matches the RegWave brand — navy header with red accent stripe, category color badges (enforcement, regulatory, speeches, news), similarity score shown per article, and a direct link to update preferences.
+
+#### Share Filtered (on-demand email)
+
+**What it is:** A one-click way to email the **current filtered/searched set** of articles to any recipient — built for the workflow where an analyst narrows the queue (e.g. *Last 7 days + Relevant*) down to a handful of items, then a reviewer sends those to a stakeholder.
+
+**How it works:** A "✉ Share filtered" button opens a modal to enter the recipient's email and an optional note. On send, the frontend posts the filtered articles to the `share.js` Netlify function, which forwards them (with the secret header) to a dedicated n8n webhook workflow that formats a branded HTML email and sends it via Gmail.
+
+```
+Filter to relevant set → ✉ Share filtered → modal (recipient + note)
+    → /.netlify/functions/share (adds secret)
+    → n8n webhook → secret check → format HTML digest → Gmail send
+```
+
+**Why it routes through n8n:** Unlike per-article share (which uses the user's own mail client), this sends a properly formatted HTML digest directly, with no per-message length limits, reusing the same Gmail sending path as the scheduled digest. A server-side limit caps a single send at 50 articles.
+
+#### Per-Article Share (mailto)
+
+**What it is:** A ✉ Share button on each article card that opens the user's own email client with that single article pre-filled — title, source, date, summary, and link. Best for quickly forwarding one item to a colleague. Requires no backend and leaves a copy in the sender's own Sent folder.
+
+#### CSV Export
+
+**What it is:** A "↓ Export CSV" button that downloads the **current filtered view** as a spreadsheet. Columns: Title, Source, Category, AI Category, Date Published, URL, Summary, Triage Status, and Notes. Values are CSV-escaped (quotes, commas, newlines handled) and the file includes a UTF-8 BOM so special characters render correctly in Excel. Triage status and notes reflect the logged-in user's own decisions. Best for large batches, offline review, or attaching to a report.
 
 ---
 
@@ -299,7 +374,7 @@ Two subscribers can have completely different digests from the same article pool
 **What runs on it:**
 - n8n (Docker container)
 - Caddy (reverse proxy + SSL termination)
-- All 16 workflows
+- All workflows
 
 ---
 
@@ -310,10 +385,11 @@ Two subscribers can have completely different digests from the same article pool
 **What it hosts:**
 - The compliance review web interface
 - The `embed.js` serverless function (embedding proxy)
+- The `share.js` serverless function (share proxy → n8n webhook)
 - Connected directly to Supabase for data and auth
 - Auto-deploys on every GitHub push
 
-> **Important:** Netlify connects directly to Supabase — it does NOT connect to n8n. n8n writes data to Supabase on its own schedule. Netlify independently reads from and writes decisions to the same Supabase database.
+> **Important:** Netlify connects directly to Supabase for all data and auth — n8n writes ingestion data to Supabase independently on its own schedule. The frontend also calls n8n in exactly one place: the `share.js` function forwards "Share filtered" requests to a single n8n webhook for on-demand email sending. Aside from that one outbound webhook call, the frontend and n8n remain decoupled (they meet at the Supabase database).
 
 ---
 
@@ -340,7 +416,7 @@ Two subscribers can have completely different digests from the same article pool
 
 **Enhanced AI Classification Prompt:** The classification prompt uses explicit decision rules, keyword anchors, a priority hierarchy, and a hard exclusions list to reduce misclassification. A KEY TEST heuristic ("Would a compliance officer need to change a policy, procedure, or control because of this article?") appears at the top of the Regulatory Updates section to prevent over-classification. A dedicated speech-vs-rule distinction rule prevents named officials' statements about rules from being miscategorized as Regulatory Updates. Worked examples drawn from real articles anchor the model's behavior for the most common failure patterns.
 
-**Manual reclassification** — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database for audit purposes and flagged visually in the review queue.
+**Manual reclassification** — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database and flagged visually in the review queue.
 
 ---
 
@@ -354,6 +430,7 @@ The system is designed to fail safely and visibly:
 - Parsing failures → article is skipped (no partial data stored)
 - HuggingFace embedding failure → article is skipped; no partial records stored
 - Empty digest → no email sent (zero-match guard in Format Email node)
+- Share request with invalid email / no articles → rejected by the `share.js` function before reaching n8n
 
 A global error workflow ensures no silent failures.
 
@@ -378,6 +455,8 @@ This ensures failures are immediately visible and actionable.
 - Classification can be non-deterministic (manual override option is available)
 - OCC PDF extraction depends on n8n's built-in Extract From File node; scanned/image PDFs will not extract correctly
 - HuggingFace free inference tier may queue requests under heavy load (~200–400ms additional latency)
+- Email delivery (scheduled digest and Share filtered) currently sends via a personal Gmail account through n8n; this is fine for low volume but is the main candidate for a dedicated transactional email service if usage scales
+- Triage decisions are stored with user attribution and timestamp, but the system does not yet retain a full change-history of every status change (no immutable audit log)
 
 These are acceptable trade-offs for a lightweight, free-tier system.
 
@@ -404,14 +483,16 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 ### Features
 
 **Search & Discovery**
-- Semantic search powered by HuggingFace embeddings + pgvector — finds conceptually related articles even when exact keywords don't match
-- Short queries and regulator name searches (e.g. "SEC", "FDIC") bypass semantic search and use fast keyword matching instead
+- Two search modes via a toggle: **Smart** (hybrid) and **Exact** (keyword), with Smart as the default
+- Smart mode fuses semantic similarity (HuggingFace embeddings + pgvector) with keyword scoring via reciprocal-rank fusion, so conceptually related *and* literal-term matches both surface
+- Exact mode does pure keyword matching across title, summary, and full text — for names, codes, and exhaustive literal sweeps
+- Short queries (≤4 chars) and regulator-name searches (e.g. "SEC", "FDIC") bypass semantic search and use fast keyword matching; the mode toggle dims to indicate it has no effect there
 - Search works from any network including corporate environments (routed via Netlify serverless function, not directly to HuggingFace)
 
 **Filtering**
 - Collapsible sidebar filter panel on desktop (click "‹ hide" to collapse, "› show" to expand — state persists per session)
 - Mobile filter drawer — tap ⚙ Filters to open a full-screen drawer with chip-style filter controls
-- Filter by Category (Enforcement, Regulatory, Speeches, News) and by Regulator independently; both filters apply together with AND logic
+- Filter by Status, Category (Enforcement, Regulatory, Speeches, News), and Regulator independently; filters apply together with AND logic
 - Date range filters with presets (Today, Last 7 days, Last 30 days, This month) and custom date picker
 - Filters and search intersect — semantic results are scoped to whichever items are currently visible through active filters
 
@@ -420,7 +501,12 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - Per-article triage panel with three decisions: **Relevant**, **Irrelevant**, **Review Later**
 - Notes field per article, saveable independently of triage decision
 - Manual category reclassification from the UI (original AI category preserved in DB, flagged visually)
-- Full audit trail — every triage decision is stored with user attribution and timestamp
+- Triage decisions stored with user attribution and timestamp
+
+**Sharing & Export**
+- **Share filtered** — email the current filtered/searched set to any recipient as a branded HTML digest, sent on demand via the `share.js` Netlify function → n8n webhook → Gmail; modal for recipient + optional note
+- **Per-article share** — ✉ Share button on each card opens the user's own mail client with that article pre-filled (title, source, date, summary, link)
+- **CSV export** — download the current filtered view as a spreadsheet (Title, Source, Category, AI Category, Date, URL, Summary, Triage Status, Notes), CSV-escaped with a UTF-8 BOM for clean Excel rendering
 
 **Email Digest (Alerts)**
 - Each user configures their own digest preferences from the Alerts page
@@ -462,8 +548,10 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 ### Frontend Optimizations
 
 - **Server-side embedding** — search query vectorization moved from browser (30MB model download + WebAssembly inference) to a Netlify serverless function; zero client-side model loading
+- **Hybrid search fusion** — Smart mode merges semantic and keyword rankings client-side via reciprocal-rank fusion, improving precision without an extra round-trip
 - **Short query bypass** — queries of 4 characters or fewer and exact regulator name matches skip the semantic search entirely and stay as fast keyword filtering
 - **Debounced search** — semantic search fires only after 600ms of typing inactivity, avoiding redundant API calls mid-query
+- **Server-side secret for sharing** — the n8n webhook secret lives in a Netlify environment variable inside `share.js`, never in public page source
 - **Dark mode flash prevention** — `localStorage` is read and `body.dark` applied in an inline script before the DOM renders, so dark mode users never see a white flash
 
 ---
@@ -482,7 +570,7 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 | Groq | Primary AI (llama-4-scout-17b) | Free tier |
 | OpenRouter | Fallback AI (google/gemma-4-27b-it) | Free tier |
 | Tavily | FFIEC search (1 workflow only) | Free tier |
-| Gmail | Email digest delivery | Free |
+| Gmail | Email delivery (digest + share filtered) | Free |
 | Telegram | Error monitoring alerts | Free |
 
 ---
@@ -491,15 +579,16 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 - ✅ **TOTALLY FREE** — entire stack runs on free tiers permanently
 - ✅ **Fully automated** — runs every morning without human intervention
-- ✅ **10 agencies, 16 workflows** — comprehensive U.S. financial regulator coverage
-- ✅ **Semantic search** — finds conceptually related articles, not just keyword matches; powered by HuggingFace embeddings stored in pgvector
+- ✅ **10 agencies, 17 workflows** — comprehensive U.S. financial regulator coverage
+- ✅ **Smart + Exact search** — hybrid semantic-plus-keyword ranking finds conceptually related articles without burying exact matches; Exact mode for literal lookups
 - ✅ **Personalized email digest** — daily or weekly delivery matched to each subscriber's regulators and compliance themes via semantic search
+- ✅ **Flexible sharing** — share the whole filtered set by email on demand, forward single articles via your own mail client, or export the filtered view to CSV
 - ✅ **Corporate firewall friendly** — semantic search routed via Netlify function; no direct browser-to-HuggingFace calls
 - ✅ **HTTPS secured** — custom domain with auto-renewing SSL certificate via Let's Encrypt
 - ✅ **AI-powered** — automatic classification and plain-English summaries
 - ✅ **Duplicate-free** — URL-level deduplication + DOJ video URL filtering at ingestion
 - ✅ **Fault-tolerant** — dual AI providers + Telegram error alerts + Docker auto-restart
-- ✅ **Audit-ready** — all triage decisions stored with user attribution and timestamps
+- ✅ **Decisions attributed** — all triage decisions stored with user attribution and timestamp
 - ✅ **Invite-only access** — no public registration; users join via magic link only
 - ✅ **Real-time monitoring** — Telegram alerts for any workflow failures
 - ✅ **PDF-capable** — OCC speeches published as PDFs are automatically detected, fetched, and extracted
@@ -511,9 +600,9 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 ## 📋 Business Summary
 
-This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured compliance review workflow. Every user sees the same unified queue and triages articles as Relevant, Irrelevant, or Review Later. Every action is permanently stored with user attribution for audit purposes.
+This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured compliance review workflow. Every user sees the same unified queue and triages articles as Relevant, Irrelevant, or Review Later. Every action is stored with user attribution and a timestamp.
 
-Semantic search — powered by HuggingFace embeddings and pgvector — lets compliance teams find relevant articles by meaning rather than exact keywords. The same semantic engine powers the personalized email digest: each subscriber receives a curated set of articles matched to their chosen regulators and compliance themes, delivered daily or weekly without any manual curation.
+Smart search — a hybrid of HuggingFace semantic embeddings (pgvector) and keyword ranking — lets compliance teams find relevant articles by meaning without losing exact-term matches, with an Exact mode for literal lookups. The same semantic engine powers the personalized email digest: each subscriber receives a curated set of articles matched to their chosen regulators and compliance themes, delivered daily or weekly without any manual curation. For ad-hoc distribution, reviewers can email the current filtered set to any stakeholder on demand, forward individual articles, or export the filtered view to CSV.
 
 The system is secured with HTTPS via a custom domain, accessible from any network including corporate environments, and eliminates hours of daily manual monitoring across 10 agencies at zero ongoing cost.
 
