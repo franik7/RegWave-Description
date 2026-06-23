@@ -98,7 +98,7 @@ The platform monitors 10 major U.S. regulatory agencies across 18 automated work
 
 **What it does in this project:**
 - Triggers all scheduled workflows daily (5:00–5:45 AM ET, staggered every 5 minutes)
-- Fetches and parses regulatory content from all 10 agencies across 14 source workflows
+- Fetches and parses regulatory content from all 10 agencies across 15 source workflows
 - Calls AI APIs for classification and summarization
 - Calls HuggingFace to generate a 384-dimension embedding vector for each article
 - Checks Supabase for duplicates before processing
