@@ -1,7 +1,7 @@
 # RegWave
 **Regulatory Intelligence Platform for Financial Services Compliance**
 
-RegWave aggregates, classifies, and summarizes regulatory updates from major US regulators — helping compliance teams stay current without manually monitoring sources.
+RegWave aggregates, classifies, and summarizes regulatory updates from major US regulators — helping compliance teams stay current without manually monitoring sources. It supports **isolated team workspaces**: multiple teams share one continuously-updated corpus of regulatory articles while each team keeps its own private triage, notes, and decisions.
 
 ---
 
@@ -16,9 +16,22 @@ This platform fully automates the collection, AI-processing, and structured revi
 - Fraud fines & enforcement actions
 - Regulatory developments across financial services
 
-The system runs completely automatically, every morning before business hours, and routes processed data through a structured compliance review workflow.
+The system runs completely automatically, every morning before business hours, and routes processed data through a structured, per-team compliance review workflow.
 
 **💰 Cost: $0** under current free-tier limits. The system is designed to operate entirely within free tiers, though higher volume or API usage may require upgrades.
+
+---
+
+## 👥 Multi-Team Workspaces
+
+RegWave supports multiple teams on a single deployment, using a **shared corpus, private review** model:
+
+- **Shared:** the article corpus itself — every team works from the same continuously-updated set of regulatory articles, collected once and available to all.
+- **Private per team:** each team's triage decisions (Relevant / Irrelevant / Review Later), notes, and category corrections are visible only to that team. Two teams can review the same article completely independently, and neither sees the other's decisions, notes, or members.
+
+Teams are onboarded by invitation — an admin invites a user into a specific team, and the new user is automatically placed in that team on signup. There is no public self-registration. Each team can also tailor which regulators it tracks, while the underlying corpus stays shared.
+
+This makes RegWave usable as a single tool across multiple compliance groups (or multiple client organizations) without their review work ever crossing over.
 
 ---
 
@@ -40,8 +53,9 @@ HuggingFace Inference API
 (all-MiniLM-L6-v2 → 384-dimension embedding vector per article)
         ↓
 Supabase (PostgreSQL + pgvector)
-   ├── Article content, metadata & decisions
-   ├── Embedding vectors for semantic search
+   ├── Shared corpus: article content, metadata & embeddings
+   ├── Per-team private triage: decisions & notes
+   ├── Teams & membership
    └── User subscriptions for email digest
         ↓
 Caddy Reverse Proxy (HTTPS + auto SSL)
@@ -53,16 +67,18 @@ Web Frontend (Netlify)
    │   └── Converts search queries → vectors via HuggingFace
    ├── Netlify Serverless Function (share.js)
    │   └── Proxies "share filtered" requests → n8n webhook (secret held server-side)
+   ├── Netlify Serverless Function (invite.js)
+   │   └── Handles team invitations
    └── Direct Supabase connection (data + auth)
         ↓
-User Review Workflow
-(Queue → Smart/Exact search → filter → Relevant / Irrelevant / Review Later → Stored decisions)
+Per-Team Review Workflow
+(Queue → Smart/Exact search → filter → Relevant / Irrelevant / Review Later → team-private decisions)
         ↓
 Output & Distribution
    ├── Email Digest Delivery (scheduled daily/weekly per subscriber via Gmail)
    ├── Share Filtered (on-demand email of the current filtered set via Gmail)
    ├── Per-article Share (mailto to user's own mail client)
-   └── CSV Export (current filtered view, with triage status & notes)
+   └── CSV Export (current filtered view, with the team's triage status & notes)
         ↓
 Telegram Error Alerts (real-time)
 ```
@@ -102,7 +118,7 @@ The platform monitors 10 major U.S. regulatory agencies across 18 automated work
 - Calls AI APIs for classification and summarization
 - Calls HuggingFace to generate a 384-dimension embedding vector for each article
 - Checks Supabase for duplicates before processing
-- Writes processed articles + embeddings to the database
+- Writes processed articles + embeddings to the database (n8n is the sole writer of the shared corpus)
 - Delivers personalized email digests to subscribers at 7 AM daily
 - Handles on-demand "share filtered" requests via a dedicated webhook workflow (triggered by the frontend)
 - Sends Telegram alerts when any workflow fails
@@ -178,7 +194,7 @@ User types "insider trading prediction markets"
 
 ### 🔹 Netlify Serverless Functions
 
-Two Node.js serverless functions are deployed automatically alongside the frontend on Netlify.
+Three Node.js serverless functions are deployed automatically alongside the frontend on Netlify.
 
 #### `embed.js` — Embedding Proxy
 
@@ -205,19 +221,25 @@ Browser: "insider trading" → /.netlify/functions/embed
 
 #### `share.js` — Share Proxy (frontend → n8n)
 
-**Why it exists:** The "Share filtered" feature needs to send email on demand, but the n8n webhook requires a shared secret. Because the frontend is a public static site, that secret must never appear in page source. `share.js` holds the secret server-side as a Netlify environment variable and injects it when forwarding the request.
+**Why it exists:** The "Share filtered" feature needs to send email on demand, but the n8n webhook requires a shared secret. Because the frontend is a public static site, that secret must never appear in page source. `share.js` holds the secret server-side and injects it when forwarding the request.
 
-**What it does:** The browser POSTs the filtered articles + recipient to `/.netlify/functions/share` (no secret). The function validates the payload (valid email, at least one article, max 50), adds the `x-regwave-secret` header, and forwards to the n8n webhook, which checks the secret and sends the email.
+**What it does:** The browser POSTs the filtered articles + recipient to `/.netlify/functions/share` (no secret). The function validates the payload (valid email, at least one article, max 50), adds the secret header, and forwards to the n8n webhook, which checks the secret and sends the email.
 
 ```
 Browser: { recipient, articles[] } → /.netlify/functions/share
-    → adds secret header (from Netlify env var)
+    → adds secret header (server-side)
     → n8n webhook → secret check → format HTML → Gmail send
 ```
 
-**Environment variables required (set in Netlify):**
-- `SHARE_WEBHOOK_URL` — the n8n production webhook URL
-- `SHARE_WEBHOOK_SECRET` — shared secret, must match the value checked in the n8n workflow
+#### `invite.js` — Team Invitations
+
+**What it does:** Handles inviting a user into a specific team. An admin submits an email and target team from the app; the function issues the invitation so that, on signup, the new user is automatically placed in the correct team. Sensitive credentials stay server-side and never appear in page source.
+
+```
+Admin: { email, team } → /.netlify/functions/invite
+    → issues team invitation (credentials server-side)
+    → user signs up → automatically placed in the chosen team
+```
 
 ---
 
@@ -226,10 +248,11 @@ Browser: { recipient, articles[] } → /.netlify/functions/share
 **What it is:** Supabase is an open-source Firebase alternative built on PostgreSQL. pgvector is a PostgreSQL extension that adds native vector storage and similarity search.
 
 **What it stores:**
-- All processed regulatory articles (title, URL, source, date, category, summary, full text)
+- All processed regulatory articles (title, URL, source, date, category, summary, full text) — the shared corpus
 - AI-generated categories and summaries
 - 384-dimension embedding vectors (one per article)
-- User triage decisions (relevant / irrelevant / review later) with notes and timestamps
+- Teams and team membership
+- Per-team triage decisions (relevant / irrelevant / review later) with notes and timestamps
 - User subscriptions for the email digest (frequency, regulators, themes)
 
 **How vector search works:**
@@ -245,14 +268,15 @@ A second RPC function `match_items_for_digest()` handles the email digest path �
 
 This all happens inside Postgres — no data travels to an external search service.
 
-**Access control (Row-Level Security):**
-- `items` is read-only for anonymous users (public regulatory news); inserts/updates require an authenticated user, and ingestion runs via the service-role key
-- `decisions`, `subscriptions`, and `profiles` are protected per-user — a signed-in user can only read and write their own rows
+**Access control:**
+- The shared article corpus is readable by all signed-in users; it is written only by the automated ingestion pipeline
+- Each team's triage decisions and notes are private to that team and isolated from other teams
+- Subscription preferences are private to each user
 
 **Why Supabase:**
 - Free tier is generous (500MB database, unlimited API calls)
 - Built-in authentication for multi-user login
-- Row-Level Security (RLS) for access control
+- Row-Level Security for access control and team isolation
 - pgvector extension available natively
 - Real-time API accessible directly from the frontend
 
@@ -260,7 +284,7 @@ This all happens inside Postgres — no data travels to an external search servi
 
 ### 🔹 Sharing & Export
 
-RegWave provides three independent ways to get articles out of the platform, each suited to a different need.
+RegWave provides three independent ways to get articles out of the platform, each suited to a different need. Triage status and notes always reflect the logged-in user's own team.
 
 #### Email Digest (scheduled) — Personalized Regulatory Intelligence Delivery
 
@@ -320,7 +344,7 @@ Filter to relevant set → ✉ Share filtered → modal (recipient + note)
 
 #### CSV Export
 
-**What it is:** A "↓ Export CSV" button that downloads the **current filtered view** as a spreadsheet. Columns: Title, Source, Category, AI Category, Date Published, URL, Summary, Triage Status, and Notes. Values are CSV-escaped (quotes, commas, newlines handled) and the file includes a UTF-8 BOM so special characters render correctly in Excel. Triage status and notes reflect the logged-in user's own decisions. Best for large batches, offline review, or attaching to a report.
+**What it is:** A "↓ Export CSV" button that downloads the **current filtered view** as a spreadsheet. Columns: Title, Source, Category, AI Category, Date Published, URL, Summary, Triage Status, and Notes. Values are CSV-escaped (quotes, commas, newlines handled) and the file includes a UTF-8 BOM so special characters render correctly in Excel. Triage status and notes reflect the logged-in user's own team. Best for large batches, offline review, or attaching to a report.
 
 ---
 
@@ -386,6 +410,7 @@ Filter to relevant set → ✉ Share filtered → modal (recipient + note)
 - The compliance review web interface
 - The `embed.js` serverless function (embedding proxy)
 - The `share.js` serverless function (share proxy → n8n webhook)
+- The `invite.js` serverless function (team invitations)
 - Connected directly to Supabase for data and auth
 - Auto-deploys on every GitHub push
 
@@ -416,7 +441,7 @@ Filter to relevant set → ✉ Share filtered → modal (recipient + note)
 
 **Enhanced AI Classification Prompt:** The classification prompt uses explicit decision rules, keyword anchors, a priority hierarchy, and a hard exclusions list to reduce misclassification. A KEY TEST heuristic ("Would a compliance officer need to change a policy, procedure, or control because of this article?") appears at the top of the Regulatory Updates section to prevent over-classification. A dedicated speech-vs-rule distinction rule prevents named officials' statements about rules from being miscategorized as Regulatory Updates. Worked examples drawn from real articles anchor the model's behavior for the most common failure patterns.
 
-**Manual reclassification** — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database and flagged visually in the review queue.
+**Manual reclassification** — users can correct AI-assigned categories from the UI; the original AI classification is retained in the database and flagged visually in the review queue. Category corrections are private to each team.
 
 ---
 
@@ -477,8 +502,8 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 ## 💻 Frontend (Web Interface)
 
 **Hosting:** Netlify (free, auto-deploys from GitHub)
-**Auth:** Supabase Auth (email/password, invite-only registration)
-**Data:** Direct Supabase API connection
+**Auth:** Supabase Auth (email/password, invite-only registration with team assignment)
+**Data:** Direct Supabase API connection, scoped per team
 
 ### Features
 
@@ -496,12 +521,18 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - Date range filters with presets (Today, Last 7 days, Last 30 days, This month) and custom date picker
 - Filters and search intersect — semantic results are scoped to whichever items are currently visible through active filters
 
-**Review Workflow**
-- Invite-only user registration — new users receive a magic link via email; no public sign-up
+**Teams & Access**
+- Multi-team: each user belongs to a team and sees that team's private triage over the shared article corpus
+- Team name shown in the nav bar so the active team is always clear
+- Invite-only onboarding — admins invite users into a specific team; no public sign-up
+- Each team can choose which regulators it tracks
+
+**Review Workflow (per team)**
 - Per-article triage panel with three decisions: **Relevant**, **Irrelevant**, **Review Later**
-- Notes field per article, saveable independently of triage decision
-- Manual category reclassification from the UI (original AI category preserved in DB, flagged visually)
-- Triage decisions stored with user attribution and timestamp
+- Decisions and notes are private to the user's team; the same article can be triaged differently by different teams
+- Notes field per article, saveable independently of triage decision, with author attribution and timestamp
+- Manual category reclassification from the UI (original AI category preserved, flagged visually; private to the team)
+- Collaborative within a team: members see and can update their team's decisions, with a conflict guard when a teammate has changed an item
 
 **Sharing & Export**
 - **Share filtered** — email the current filtered/searched set to any recipient as a branded HTML digest, sent on demand via the `share.js` Netlify function → n8n webhook → Gmail; modal for recipient + optional note
@@ -523,12 +554,13 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - Classification intelligence section (AI vs manually reclassified, reclassification rate by category)
 - Summary tables — monthly breakdown of articles by regulator (Jan–Dec columns, regulator rows, total column), with a second table filtered to Regulatory Updates only; both tables update with the dashboard's date period filter
 - Filterable by period (All time, 12 months, 90 days, 30 days) or custom date range
+- All decision-based analytics reflect the logged-in user's own team
 
 **UI / UX**
 - Dark mode toggle in the nav bar — persists across sessions via localStorage, with flash-prevention so the correct theme loads before the page renders
 - Fully responsive — optimised for both desktop and mobile:
   - Desktop: collapsible sidebar, full nav, all controls visible
-  - Mobile: filter drawer, compressed nav (name hidden, sign out minimised), "+" button instead of "+ Add item", search count hidden to preserve row space, summary tables horizontally scrollable
+  - Mobile: filter drawer, compressed nav (name hidden, sign out minimised), search count hidden to preserve row space, summary tables horizontally scrollable
 
 ---
 
@@ -578,6 +610,7 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 ## 📈 Key Advantages
 
 - ✅ **TOTALLY FREE** — entire stack runs on free tiers permanently
+- ✅ **Multi-team** — multiple teams share one regulatory corpus while each keeps private, isolated triage, notes, and categories
 - ✅ **Fully automated** — runs every morning without human intervention
 - ✅ **10 agencies, 18 workflows** — comprehensive U.S. financial regulator coverage
 - ✅ **Smart + Exact search** — hybrid semantic-plus-keyword ranking finds conceptually related articles without burying exact matches; Exact mode for literal lookups
@@ -589,7 +622,7 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 - ✅ **Duplicate-free** — URL-level deduplication + DOJ video URL filtering at ingestion
 - ✅ **Fault-tolerant** — dual AI providers + Telegram error alerts + Docker auto-restart
 - ✅ **Decisions attributed** — all triage decisions stored with user attribution and timestamp
-- ✅ **Invite-only access** — no public registration; users join via magic link only
+- ✅ **Invite-only access** — no public registration; users join a specific team via invitation
 - ✅ **Real-time monitoring** — Telegram alerts for any workflow failures
 - ✅ **PDF-capable** — OCC speeches published as PDFs are automatically detected, fetched, and extracted
 - ✅ **Dark mode** — system-wide dark theme with localStorage persistence and flash-free loading
@@ -600,11 +633,11 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 ## 📋 Business Summary
 
-This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured compliance review workflow. Every user sees the same unified queue and triages articles as Relevant, Irrelevant, or Review Later. Every action is stored with user attribution and a timestamp.
+This platform continuously monitors all major U.S. financial regulators, automatically collects and AI-processes regulatory updates every morning, and routes them through a structured, per-team compliance review workflow. Multiple teams work from the same continuously-updated corpus of regulatory articles, but each team sees its own private queue and triages articles as Relevant, Irrelevant, or Review Later. Every action is stored with user attribution and a timestamp, and one team's decisions, notes, and categorizations are never visible to another.
 
 Smart search — a hybrid of HuggingFace semantic embeddings (pgvector) and keyword ranking — lets compliance teams find relevant articles by meaning without losing exact-term matches, with an Exact mode for literal lookups. The same semantic engine powers the personalized email digest: each subscriber receives a curated set of articles matched to their chosen regulators and compliance themes, delivered daily or weekly without any manual curation. For ad-hoc distribution, reviewers can email the current filtered set to any stakeholder on demand, forward individual articles, or export the filtered view to CSV.
 
-The system is secured with HTTPS via a custom domain, accessible from any network including corporate environments, and eliminates hours of daily manual monitoring across 10 agencies at zero ongoing cost.
+Teams are onboarded by invitation only — an admin invites a user into a specific team, and the new user is automatically placed in that team on signup. The system is secured with HTTPS via a custom domain, accessible from any network including corporate environments, and eliminates hours of daily manual monitoring across 10 agencies at zero ongoing cost.
 
 ---
 
