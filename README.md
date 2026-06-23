@@ -25,10 +25,10 @@ The system runs completely automatically, every morning before business hours, a
 ## 🏗️ Architecture
 
 ```
-10 Regulatory Agencies → 17 Workflows
+10 Regulatory Agencies → 18 Workflows
         ↓
 n8n Workflows
-   ├── 14 source workflows
+   ├── 15 source workflows
    ├── 1 email digest delivery workflow
    ├── 1 on-demand share workflow (webhook-triggered)
    └── 1 global error handler
@@ -71,7 +71,7 @@ Telegram Error Alerts (real-time)
 
 ## 🏛️ Regulatory Sources
 
-The platform monitors 10 major U.S. regulatory agencies across 17 automated workflows (14 source workflows + 1 email digest + 1 error handler, plus 1 webhook-triggered share workflow):
+The platform monitors 10 major U.S. regulatory agencies across 18 automated workflows (15 source workflows + 1 email digest + 1 error handler, plus 1 webhook-triggered share workflow):
 
 | Source | Type | Collection Method |
 |--------|------|-------------------|
@@ -579,7 +579,7 @@ The `url` field is enforced as unique, ensuring no duplicate records are ever st
 
 - ✅ **TOTALLY FREE** — entire stack runs on free tiers permanently
 - ✅ **Fully automated** — runs every morning without human intervention
-- ✅ **10 agencies, 17 workflows** — comprehensive U.S. financial regulator coverage
+- ✅ **10 agencies, 18 workflows** — comprehensive U.S. financial regulator coverage
 - ✅ **Smart + Exact search** — hybrid semantic-plus-keyword ranking finds conceptually related articles without burying exact matches; Exact mode for literal lookups
 - ✅ **Personalized email digest** — daily or weekly delivery matched to each subscriber's regulators and compliance themes via semantic search
 - ✅ **Flexible sharing** — share the whole filtered set by email on demand, forward single articles via your own mail client, or export the filtered view to CSV
