@@ -270,7 +270,7 @@ This all happens inside Postgres — no data travels to an external search servi
 
 **Access control:**
 - The shared article corpus is readable by all signed-in users; it is written only by the automated ingestion pipeline
-- Each team's triage decisions and notes are private to that team and isolated from other teams
+- Each team's triage decisions, notes, and category corrections are private to that team and isolated from other teams
 - Subscription preferences are private to each user
 
 **Why Supabase:**
