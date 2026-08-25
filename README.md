@@ -34,21 +34,7 @@ Instead of relying on regulator websites, inboxes, spreadsheets, and informal no
 
 ## 🏛️ Regulatory Sources
 
-Current coverage includes:
-
-- FinCEN
-- U.S. Treasury
-- OCC
-- FDIC
-- Federal Reserve
-- FINRA
-- SEC
-- FFIEC
-- CFTC
-- DOJ
-- New York State Department of Financial Services (**NYSDFS**)
-
-Coverage includes regulatory updates, enforcement actions, speeches, guidance, announcements, and other developments relevant to financial-services compliance.
+Coverage includes regulatory updates, enforcement actions, speeches, guidance, announcements, and other developments relevant to US-based financial-services compliance.
 
 ---
 
