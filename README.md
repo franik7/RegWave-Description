@@ -16,25 +16,29 @@ It monitors developments relevant to:
 
 - **BSA** — Bank Secrecy Act
 - **AML** — Anti-Money Laundering
-- **KYC / CDD** — Know Your Customer / Customer Due Diligence
-- **Sanctions / OFAC**
+- **KYC/CDD** — Know Your Customer / Customer Due Diligence
+- **Sanctions/OFAC**
 - **ABC** — Anti-Bribery & Corruption
 - **Fraud** and financial-crime enforcement
 - **Cybersecurity** and related supervisory expectations
 - **Consumer protection**
-- broader regulatory and supervisory developments affecting financial institutions
+- Broader regulatory and supervisory developments affecting financial institutions
 
 The workflow is simple:
 
 **Monitor → Organize → Suggest → Human Review → Share / Act → Audit**
 
-Instead of relying on regulator websites, inboxes, spreadsheets, and informal notes, teams work from one continuously updated review environment.
+Instead of relying on regulator websites, inboxes, spreadsheets, and informal notes, teams work from one review environment that is refreshed every day.
 
 ---
 
 ## 🏛️ Regulatory Sources
 
-Coverage includes regulatory updates, enforcement actions, speeches, guidance, announcements, and other developments relevant to US-based financial-services compliance.
+Coverage includes regulatory updates, enforcement actions, speeches, guidance, announcements, and other developments relevant to U.S. financial-services compliance.
+
+New publications are collected once a day.
+
+Items are collected from each source's public newsroom. Not every publication type from every source is covered.
 
 ---
 
@@ -42,7 +46,7 @@ Coverage includes regulatory updates, enforcement actions, speeches, guidance, a
 
 RegWave does more than collect regulatory news.
 
-Each team can define its own relevance criteria so the same regulatory development can be evaluated through that institution's specific compliance lens.
+Each team works with its own relevance profile, so the same regulatory development can be evaluated through that institution's specific compliance lens.
 
 A relevance profile can reflect factors such as:
 
@@ -54,7 +58,7 @@ A relevance profile can reflect factors such as:
 - financial-crime risks
 - internal compliance priorities
 
-RegWave evaluates new items against that profile and provides an **AI relevance suggestion with a short reason**.
+RegWave evaluates new items against that profile and provides an **AI relevance suggestion with a short reason**. The suggestion is either Relevant or Irrelevant, and is based on the item's source, category, topic tags, title, and summary.
 
 Reviewers then make the final decision:
 
@@ -68,14 +72,14 @@ The AI suggestion never becomes the institution's decision automatically.
 
 ## 🧠 AI-Assisted Classification
 
-New items are organized into a structured review taxonomy:
+Each new item is assigned exactly one category:
 
 - **BSA/AML/KYC Fines & Enforcement**
 - **Regulatory Updates**
 - **Regulator Speeches & Testimony**
 - **Industry News & Trends**
 
-Items may also receive AFC topic tags such as:
+Each item can also receive up to three AFC topic tags:
 
 - AML/BSA
 - KYC/CDD
@@ -89,7 +93,9 @@ Items may also receive AFC topic tags such as:
 - Consumer Protection
 - Capital/Prudential
 
-RegWave also produces concise plain-English summaries for compliance review.
+RegWave also produces a two-sentence plain-English summary of each item: what happened, and why it matters to a compliance team.
+
+For long documents, the category, topic tags, and summary are based on the opening portion of the text.
 
 ---
 
@@ -168,11 +174,11 @@ Search works together with active Queue filters.
 
 ---
 
-## 🔁 Cross-Agency Duplicate Detection
+## 🔁 Duplicate Detection
 
-The same regulatory action is often published by multiple agencies.
+The same regulatory action is often published by multiple agencies, and sometimes republished by the same agency.
 
-RegWave detects likely cross-agency duplicates and groups related publications so reviewers can recognize when several items describe the same underlying event.
+RegWave detects likely duplicates and links related publications so reviewers can recognize when several items describe the same underlying event. Detection runs once a day, after new publications are collected.
 
 Duplicates are **flagged, not merged**.
 
@@ -190,23 +196,25 @@ This reduces repetitive review without hiding source material or automatically c
 
 ## 🔔 Alerts
 
-Users can configure regulatory digests based on:
+Users can set up email digests based on:
 
-- frequency
+- frequency (daily or weekly)
 - regulators
 - compliance themes
 
-Digests can be tailored to the subjects that matter to a particular reviewer or team.
+Themes are matched by meaning, not only by exact keyword, so digests can be tailored to the subjects that matter to a particular reviewer or team.
+
+A daily digest covers the previous day; a weekly digest covers the previous seven days. No email is sent when nothing matches.
 
 ---
 
 ## ✉️ Sharing & Distribution
 
-RegWave supports several ways to distribute reviewed intelligence.
+RegWave supports several ways to distribute reviewed intelligence by email.
 
 ### Share Filtered
 
-A reviewer can send the current filtered set of articles to a stakeholder.
+A reviewer can send the current filtered set of articles to a stakeholder, with an optional note.
 
 Successful shares are recorded so the team can see which items have already been distributed.
 
@@ -291,6 +299,8 @@ RegWave is designed around several basic principles:
 - isolated public demo environment
 - auditable human review activity
 
+AI features rely on third-party model providers. Those providers process public regulatory text and, where a feature needs it, a team's relevance profile or a user's alert themes.
+
 RegWave does not publish unnecessary implementation details or claim security certifications it has not earned.
 
 More detailed security and data-handling information can be provided during customer or procurement review.
@@ -340,7 +350,7 @@ Current functionality includes:
 - AFC topic tagging
 - institution-specific relevance suggestions
 - Smart and Exact search
-- cross-agency duplicate detection
+- duplicate detection across and within agencies
 - review decisions and notes
 - alert digests
 - sharing and share tracking
@@ -365,6 +375,8 @@ For product questions, access requests, or pilot discussions:
 RegWave is a regulatory intelligence and workflow tool.
 
 It does not provide legal or regulatory advice, does not determine an institution's obligations, and does not replace review by qualified compliance or legal personnel.
+
+AI-generated categories, topic tags, summaries, and relevance suggestions can be wrong or incomplete, and coverage does not include every publication from every source.
 
 Users should verify material against the original regulatory source before relying on it.
 
