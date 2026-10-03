@@ -38,7 +38,7 @@ Coverage includes regulatory updates, enforcement actions, speeches, guidance, a
 
 New publications are collected once a day.
 
-Items are collected from each source's public newsroom. Not every publication type from every source is covered.
+Not every publication type from every source is covered.
 
 ---
 
@@ -58,7 +58,7 @@ A relevance profile can reflect factors such as:
 - financial-crime risks
 - internal compliance priorities
 
-RegWave evaluates new items against that profile and provides an **AI relevance suggestion with a short reason**. The suggestion is either Relevant or Irrelevant, and is based on the item's source, category, topic tags, title, and summary.
+RegWave evaluates new items against that profile and provides an **AI relevance suggestion with a short reason**.
 
 Reviewers then make the final decision:
 
@@ -94,8 +94,6 @@ Each item can also receive up to three AFC topic tags:
 - Capital/Prudential
 
 RegWave also produces a two-sentence plain-English summary of each item: what happened, and why it matters to a compliance team.
-
-For long documents, the category, topic tags, and summary are based on the opening portion of the text.
 
 ---
 
@@ -136,9 +134,11 @@ Reviewers can:
 - review AI relevance suggestions
 - record triage decisions
 - add notes
-- reclassify categories
+- reclassify categories (the original AI category is preserved)
 - identify related publications
 - track whether an item has already been shared
+
+Triage decisions are confirmed before they are recorded, and simultaneous edits by teammates are caught rather than overwritten.
 
 The goal is to turn regulatory monitoring into a controlled review process rather than a stream of disconnected alerts.
 
@@ -178,7 +178,7 @@ Search works together with active Queue filters.
 
 The same regulatory action is often published by multiple agencies, and sometimes republished by the same agency.
 
-RegWave detects likely duplicates and links related publications so reviewers can recognize when several items describe the same underlying event. Detection runs once a day, after new publications are collected.
+RegWave detects likely duplicates and links related publications so reviewers can recognize when several items describe the same underlying event.
 
 Duplicates are **flagged, not merged**.
 
@@ -189,6 +189,8 @@ Every publication remains independently visible and keeps its own:
 - notes
 - category
 - audit history
+
+An administrator can dismiss an incorrect duplicate link.
 
 This reduces repetitive review without hiding source material or automatically copying decisions from one publication to another.
 
@@ -226,6 +228,8 @@ Individual articles can be forwarded directly from the review interface.
 
 The Queue shows whether articles have already been shared, helping teams distinguish items already distributed from items still awaiting action.
 
+Share history records when an item was shared and by whom. Recipient email addresses are not stored.
+
 ---
 
 ## 📤 CSV Export
@@ -255,6 +259,8 @@ The audit record can capture:
 - shares
 
 Entries include actor and timestamp information.
+
+Audit entries cannot be edited or deleted by any user, including administrators. The audit trail is visible to team administrators, not to all members.
 
 The purpose is not only to know the team's current position, but to be able to explain:
 
